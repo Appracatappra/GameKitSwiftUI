@@ -37,7 +37,7 @@ public final class GKAuthentication: NSObject, GKLocalPlayerListener {
 
     // MARK: - Enumerations
     /// Defines an error that will be thrown when the authentication times out.
-    public struct TimerError: LocalizedError {
+    public struct AuthenticationError: LocalizedError {
         /// Holds the message.
         let message: String
         
@@ -50,6 +50,13 @@ public final class GKAuthentication: NSObject, GKLocalPlayerListener {
     // MARK: - Static Properties
     /// Holds the common shared instance of `GKAuthentication`.
     nonisolated(unsafe) public static let shared = GKAuthentication()
+    
+    /// If `true` the logout process will time-out after a given number of seconds. If `false` the time-out will not occur.
+    nonisolated(unsafe) public static var useTimeout: Bool = true;
+    
+    /// Sets the number of seconds before a time-out occurs.
+    /// - remark: Time-out will only occur if the `useTimeout` property is set to `true`.
+    nonisolated(unsafe) public static var timeoutSeconds: TimeInterval = 10.0
     
     // MARK: - Properties
     /// Holds an authentication time-out timer.
@@ -114,34 +121,46 @@ public final class GKAuthentication: NSObject, GKLocalPlayerListener {
         // Invalidate any existing timer to prevent duplicates
         timer?.invalidate()
         
-        // Schedule a timer that repeats every 1.0 second
-        timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { currentTimer in
-            
-            failed(TimerError(message: "GKLocalPlayer Local Authentication Timed Out."))
-            currentTimer.invalidate()
+        // Start a time-out timer?
+        if GKAuthentication.useTimeout {
+            // Yes, Schedule a timer that ends after the given number of seconds elapse.
+            timer = Timer.scheduledTimer(withTimeInterval: GKAuthentication.timeoutSeconds, repeats: false) { currentTimer in
+                // Notify caller of time-out.
+                failed(AuthenticationError(message: "GKLocalPlayer Local Authentication Timed Out."))
+                currentTimer.invalidate()
+            }
         }
         
         // Handle authentication.
         GKLocalPlayer.local.authenticateHandler = { viewController, error in
 
+            // Authentication has started, cancel the time-out.
+            self.stopTimer()
+            
             // Is authenticated?
             if GKLocalPlayer.local.isAuthenticated {
-                // Yes, stop timer, notify caller and abort.
-                self.stopTimer()
+                // Yes, notify caller and abort.
                 authenticated(GKLocalPlayer.local)
                 return
             }
 
             // Did authentication fail?
             if let error = error {
-                // Yes, stop timer, notify caller and abort.
+                // Yes, log error, notify caller and abort.
                 os_log("Authentication failed %{public}@", log: OSLog.authentication, type: .error, error.localizedDescription)
                 self.authenticationError = error
-                self.stopTimer()
                 failed(error)
                 return
             }
-            authenticationViewController(viewController!)
+            
+            // Was a Game Center view returned?
+            if let viewController {
+                // Yes, Ask caller to display authentication view.
+                authenticationViewController(viewController)
+            } else {
+                // No, an error has occurred, inform the user and cancel authentication.
+                failed(AuthenticationError(message: "GKLocalPlayer Local Authentication failed to return a valid Game Center View."))
+            }
         }
     }
     
